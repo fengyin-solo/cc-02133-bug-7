@@ -7,31 +7,61 @@
         <p class="page-subtitle">众多企业的信赖之选，见证智慧物流的力量</p>
       </div>
     </section>
-    
-    <!-- 筛选标签 -->
+
+    <!-- 筛选标签：与地址栏 ?tag= 保持同步 -->
     <section class="filter-section">
       <div class="container">
-        <div class="filter-tags">
-          <el-button 
-            v-for="tag in tags" 
+        <nav class="filter-tags" aria-label="案例行业筛选">
+          <el-button
+            v-for="tag in tags"
             :key="tag.value"
             :type="activeTag === tag.value ? 'primary' : ''"
+            :aria-current="activeTag === tag.value ? 'true' : undefined"
             round
-            @click="activeTag = tag.value"
+            @click="selectTag(tag.value)"
           >
             {{ tag.label }}
           </el-button>
-        </div>
+        </nav>
       </div>
     </section>
-    
+
     <!-- 案例列表 -->
     <section class="section section-gray">
       <div class="container">
-        <div class="case-grid">
-          <div 
-            class="case-detail-card" 
-            v-for="caseItem in filteredCases" 
+        <!-- 加载中：骨架占位，避免连续切换标签时残留上一次的卡片 -->
+        <div v-if="loading" class="case-grid" v-loading="true" element-loading-text="案例加载中...">
+          <div v-for="n in 4" :key="n" class="case-skeleton" aria-hidden="true">
+            <div class="skeleton-header"></div>
+            <div class="skeleton-body">
+              <div class="skeleton-line skeleton-line--title"></div>
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line skeleton-line--short"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 加载失败：可重试 -->
+        <div v-else-if="error" class="case-state">
+          <el-result icon="error" title="案例加载失败" sub-title="网络开小差了，请稍后重试">
+            <template #extra>
+              <el-button type="primary" @click="loadCases(activeTag)">重新加载</el-button>
+            </template>
+          </el-result>
+        </div>
+
+        <!-- 空态：该行业组合下暂无案例 -->
+        <div v-else-if="filteredCases.length === 0" class="case-state">
+          <el-empty :description="emptyDescription">
+            <el-button type="primary" @click="resetFilter">查看全部案例</el-button>
+          </el-empty>
+        </div>
+
+        <!-- 案例卡片 -->
+        <div v-else class="case-grid">
+          <div
+            class="case-detail-card"
+            v-for="caseItem in filteredCases"
             :key="caseItem.title"
           >
             <div class="case-header" :style="{ background: caseItem.gradient }">
@@ -43,17 +73,18 @@
             <div class="case-body">
               <h3 class="case-title">{{ caseItem.title }}</h3>
               <p class="case-desc">{{ caseItem.description }}</p>
-              
+
               <div class="case-challenge">
                 <h4><el-icon><Warning /></el-icon> 面临挑战</h4>
                 <p>{{ caseItem.challenge }}</p>
               </div>
-              
+
               <div class="case-solution">
                 <h4><el-icon><Checked /></el-icon> 解决方案</h4>
                 <p>{{ caseItem.solution }}</p>
               </div>
-              
+
+              <!-- 实施效果卡 -->
               <div class="case-results">
                 <h4>实施效果</h4>
                 <div class="result-items">
@@ -68,12 +99,12 @@
         </div>
       </div>
     </section>
-    
+
     <!-- 客户评价 -->
     <section class="section section-light">
       <div class="container">
-        <SectionTitle 
-          title="客户评价" 
+        <SectionTitle
+          title="客户评价"
           subtitle="听听他们怎么说"
         />
         <div class="testimonial-grid">
@@ -95,7 +126,7 @@
         </div>
       </div>
     </section>
-    
+
     <!-- CTA -->
     <section class="section cta-section">
       <div class="container text-center">
@@ -111,10 +142,15 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import SectionTitle from '@/components/SectionTitle.vue'
 
-const activeTag = ref('all')
+const route = useRoute()
+const router = useRouter()
+
+const DEFAULT_TAG = 'all'
 
 const tags = [
   { label: '全部案例', value: 'all' },
@@ -124,7 +160,10 @@ const tags = [
   { label: '制造业', value: 'manufacturing' }
 ]
 
-const cases = [
+const tagValues = new Set(tags.map(t => t.value))
+const tagLabelMap = new Map(tags.map(t => [t.value, t.label]))
+
+const allCases = [
   {
     title: '某大型电商平台',
     industry: '电商物流',
@@ -211,13 +250,6 @@ const cases = [
   }
 ]
 
-const filteredCases = computed(() => {
-  if (activeTag.value === 'all') {
-    return cases
-  }
-  return cases.filter(c => c.tag === activeTag.value)
-})
-
 const testimonials = [
   {
     content: '知运的智慧仓储系统帮助我们实现了仓库作业的全面升级，效率提升非常明显，团队都很满意。',
@@ -235,6 +267,93 @@ const testimonials = [
     title: '某零售集团供应链总监'
   }
 ]
+
+const loading = ref(false)
+const error = ref(false)
+const displayedCases = ref([])
+
+// 当前生效的筛选条件，始终是 tags 中存在的合法值；未知值统一回退到“全部案例”
+const activeTag = computed(() => {
+  const raw = route.query.tag
+  const value = Array.isArray(raw) ? raw[0] : raw
+  return value && tagValues.has(value) ? value : DEFAULT_TAG
+})
+
+const filteredCases = computed(() => {
+  if (activeTag.value === DEFAULT_TAG) {
+    return displayedCases.value
+  }
+  return displayedCases.value.filter(c => c.tag === activeTag.value)
+})
+
+const emptyDescription = computed(() =>
+  `暂无「${tagLabelMap.get(activeTag.value) || '该行业'}」相关案例，换个行业看看吧`
+)
+
+// 请求序号：连续点击标签时，只有最后一次请求的结果会生效，旧结果一律丢弃
+let fetchSequence = 0
+
+/**
+ * 加载指定行业的案例。
+ * 当前为静态数据（一次性返回全部、前端按 tag 过滤），用短延时模拟请求以覆盖加载/竞态逻辑；
+ * tag 参数预留给真实接口（如 fetchCases(tag)），接入时只需替换函数体，调用方与状态机无需改动。
+ */
+const loadCases = (tag) => {
+  const seq = ++fetchSequence
+  loading.value = true
+  error.value = false
+
+  return new Promise(resolve => {
+    setTimeout(() => resolve(allCases), 260)
+  })
+    .then(data => {
+      // 过期响应（用户已切换到别的标签）直接丢弃，防止旧结果残留
+      if (seq !== fetchSequence) return
+      displayedCases.value = Array.isArray(data) ? data : []
+      error.value = false
+    })
+    .catch(() => {
+      if (seq !== fetchSequence) return
+      displayedCases.value = []
+      error.value = true
+    })
+    .finally(() => {
+      if (seq === fetchSequence) {
+        loading.value = false
+      }
+    })
+}
+
+// 点击标签：写入地址栏（push，可通过浏览器后退恢复上一次筛选）
+const selectTag = (value) => {
+  if (value === activeTag.value) return
+  router.push({ name: 'Cases', query: value === DEFAULT_TAG ? {} : { tag: value } })
+}
+
+// 空态下一键清空筛选条件
+const resetFilter = () => {
+  if (activeTag.value === DEFAULT_TAG) {
+    loadCases(DEFAULT_TAG)
+    return
+  }
+  router.push({ name: 'Cases', query: {} })
+}
+
+// 地址栏中的筛选条件变化（前进/后退/手动改 URL/首次进入）统一处理
+watch(
+  () => route.query.tag,
+  (rawTag) => {
+    const rawValue = Array.isArray(rawTag) ? rawTag[0] : rawTag
+    if (rawValue && !tagValues.has(rawValue)) {
+      // 未知值：提示后静默回退到全部案例，保证高亮、列表、地址三者一致
+      ElMessage.warning('未找到该筛选分类，已为您展示全部案例')
+      router.replace({ name: 'Cases', query: {} })
+      return
+    }
+    loadCases(activeTag.value)
+  },
+  { immediate: true }
+)
 </script>
 
 <style lang="scss" scoped>
@@ -275,6 +394,47 @@ const testimonials = [
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: $spacing-xl;
+  min-height: 320px;
+  align-content: start;
+}
+
+.case-state {
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.case-skeleton {
+  background: $bg-white;
+  border-radius: $radius-lg;
+  overflow: hidden;
+  box-shadow: $shadow-md;
+}
+
+.skeleton-header {
+  height: 160px;
+  background: linear-gradient(135deg, #e3e7ef 0%, #eef1f6 100%);
+}
+
+.skeleton-body {
+  padding: $spacing-lg;
+}
+
+.skeleton-line {
+  height: 14px;
+  border-radius: $radius-sm;
+  background: #f0f2f5;
+  margin-bottom: $spacing-md;
+
+  &--title {
+    height: 20px;
+    width: 55%;
+  }
+
+  &--short {
+    width: 70%;
+  }
 }
 
 .case-detail-card {
@@ -283,7 +443,7 @@ const testimonials = [
   overflow: hidden;
   box-shadow: $shadow-md;
   transition: all 0.3s;
-  
+
   &:hover {
     transform: translateY(-8px);
     box-shadow: $shadow-lg;
@@ -341,7 +501,7 @@ const testimonials = [
 .case-challenge,
 .case-solution {
   margin-bottom: $spacing-md;
-  
+
   h4 {
     display: flex;
     align-items: center;
@@ -349,12 +509,12 @@ const testimonials = [
     font-size: $font-size-sm;
     color: $text-primary;
     margin-bottom: $spacing-xs;
-    
+
     .el-icon {
       color: $warning-color;
     }
   }
-  
+
   p {
     font-size: $font-size-sm;
     color: $text-secondary;
@@ -370,7 +530,7 @@ const testimonials = [
   background: $bg-color;
   margin: 0 (-$spacing-lg) (-$spacing-lg);
   padding: $spacing-md $spacing-lg;
-  
+
   h4 {
     font-size: $font-size-sm;
     color: $text-primary;
@@ -385,14 +545,14 @@ const testimonials = [
 
 .result-item {
   text-align: center;
-  
+
   .result-value {
     display: block;
     font-size: $font-size-xl;
     font-weight: 700;
     color: $primary-color;
   }
-  
+
   .result-label {
     font-size: $font-size-xs;
     color: $text-secondary;
@@ -447,7 +607,7 @@ const testimonials = [
     font-size: $font-size-base;
     color: $text-primary;
   }
-  
+
   p {
     font-size: $font-size-sm;
     color: $text-secondary;
@@ -475,7 +635,7 @@ const testimonials = [
   .case-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .testimonial-grid {
     grid-template-columns: 1fr;
   }
@@ -485,7 +645,7 @@ const testimonials = [
   .page-title {
     font-size: $font-size-xxl;
   }
-  
+
   .result-items {
     flex-wrap: wrap;
   }
